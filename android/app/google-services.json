@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "871918637461",
+    "project_id": "driverdrowsiness-f9fe0",
+    "storage_bucket": "driverdrowsiness-f9fe0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:871918637461:android:f91eb6086c383435f8e69c",
+        "android_client_info": {
+          "package_name": "com.example.driver_drowsidetection"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIsZKsHlxRnA_sQEKcDKtQXd_P3v_6fio"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
