@@ -1,4 +1,3 @@
-
 // home_page.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -9,7 +8,6 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -23,7 +21,6 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-
   // Camera variables
   CameraController? _cameraController;
   List<CameraDescription>? _cameras;
@@ -39,8 +36,6 @@ class _HomePageState extends State<HomePage> {
   // Bluetooth camera variables
   bool _isBluetoothCameraConnected = false;
   String _bluetoothStatus = 'Disconnected';
-
-  // No need for instance variable anymore in new version
   List<BluetoothDevice> devicesList = [];
   BluetoothDevice? connectedDevice;
 
@@ -51,8 +46,8 @@ class _HomePageState extends State<HomePage> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // Your Python Backend URL (You'll set this later)
-  String backendUrl = 'http://192.168.29.210:5000/predict'; // Change this
+  // ⚠️ CHANGE THIS TO YOUR COMPUTER'S IP ADDRESS
+  String backendUrl = 'http://10.86.66.10:5000/predict';
 
   @override
   void initState() {
@@ -71,7 +66,6 @@ class _HomePageState extends State<HomePage> {
   // Initialize camera
   Future<void> _initializeCamera() async {
     try {
-      // Request camera permission
       final status = await Permission.camera.request();
       if (!status.isGranted) {
         setState(() {
@@ -80,7 +74,6 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      // Get available cameras
       _cameras = await availableCameras();
       if (_cameras == null || _cameras!.isEmpty) {
         setState(() {
@@ -89,13 +82,11 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      // Get front camera
       final frontCamera = _cameras!.firstWhere(
             (camera) => camera.lensDirection == CameraLensDirection.front,
         orElse: () => _cameras!.first,
       );
 
-      // Initialize camera controller
       _cameraController = CameraController(
         frontCamera,
         ResolutionPreset.medium,
@@ -119,10 +110,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   // Connect Bluetooth Camera
-// Connect Bluetooth Camera - NEW VERSION
   void _connectBluetoothCamera() async {
     if (_isBluetoothCameraConnected) {
-      // Disconnect
       if (connectedDevice != null) {
         try {
           await connectedDevice!.disconnect();
@@ -142,13 +131,11 @@ class _HomePageState extends State<HomePage> {
         }
       }
     } else {
-      // Show device selection dialog
       _showBluetoothDevicesDialog();
     }
   }
 
   void _showBluetoothDevicesDialog() async {
-    // Request Bluetooth permission
     if (await Permission.bluetooth.request().isGranted) {
       print("Scanning for Bluetooth devices...");
 
@@ -158,24 +145,20 @@ class _HomePageState extends State<HomePage> {
 
       devicesList.clear();
 
-      // Start scanning
       FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
 
-      // Listen to scan results
       var subscription = FlutterBluePlus.scanResults.listen((results) {
         setState(() {
           devicesList = results.map((r) => r.device).toList();
         });
       });
 
-      // Wait for scan to complete
       await Future.delayed(const Duration(seconds: 5));
       FlutterBluePlus.stopScan();
       subscription.cancel();
 
       if (!mounted) return;
 
-      // Show dialog with found devices
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -263,7 +246,6 @@ class _HomePageState extends State<HomePage> {
       _drowsinessStatus = 'Normal';
     });
 
-    // Capture and send frames every 2 seconds
     _captureTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
       _captureAndSendFrame();
     });
@@ -280,7 +262,7 @@ class _HomePageState extends State<HomePage> {
     _captureTimer?.cancel();
   }
 
-  // Capture frame and send to backend
+  // Capture frame and send to backend - UPDATED FOR BASE64
   Future<void> _captureAndSendFrame() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
       return;
@@ -290,58 +272,63 @@ class _HomePageState extends State<HomePage> {
       // Capture image
       final XFile image = await _cameraController!.takePicture();
 
+      // Read image as bytes
+      final bytes = await File(image.path).readAsBytes();
+
+      // Convert to base64
+      final base64Image = base64Encode(bytes);
+
       // Send to backend
-      await _sendFrameToBackend(image.path);
+      await _sendFrameToBackend(base64Image);
     } catch (e) {
       print('Error capturing frame: $e');
     }
   }
 
-  // Send frame to your Python backend
-  Future<void> _sendFrameToBackend(String imagePath) async {
+  // Send frame to Python backend - UPDATED FOR JSON
+  Future<void> _sendFrameToBackend(String base64Image) async {
     try {
-      var request = http.MultipartRequest('POST', Uri.parse(backendUrl));
-      request.files.add(await http.MultipartFile.fromPath('image', imagePath));
-
-      var response = await request.send();
+      final response = await http.post(
+        Uri.parse(backendUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'image': base64Image}),
+      ).timeout(Duration(seconds: 5));
 
       if (response.statusCode == 200) {
-        final responseData = await response.stream.bytesToString();
-        final jsonData = json.decode(responseData);
-
-        // Process response from your ML model
+        final jsonData = json.decode(response.body);
         _processMLResponse(jsonData);
+      } else {
+        print('Backend error: ${response.statusCode}');
+        setState(() {
+          _drowsinessStatus = 'Backend error';
+        });
       }
     } catch (e) {
       print('Error sending to backend: $e');
-      // For testing without backend, use dummy response
-      _testWithoutBackend();
+      setState(() {
+        _drowsinessStatus = 'Connection failed';
+      });
     }
   }
 
-  // Process ML response from your Python backend
+  // Process ML response - UPDATED FOR KERAS BACKEND RESPONSE
   void _processMLResponse(Map<String, dynamic> response) {
-    bool isDrowsy = response['drowsy'] ?? false;
+    // Backend returns: {'is_drowsy': bool, 'confidence': float, 'alert_count': int}
+    bool isDrowsy = response['is_drowsy'] ?? false;
+    double confidence = response['confidence'] ?? 0.0;
 
     if (isDrowsy) {
       setState(() {
         _detectionCount++;
-        _drowsinessStatus = 'Drowsy Detected!';
+        _drowsinessStatus = 'Drowsy Detected! (${(confidence * 100).toStringAsFixed(1)}%)';
       });
 
       _triggerAlerts();
     } else {
       setState(() {
-        _drowsinessStatus = 'Normal';
+        _drowsinessStatus = 'Normal (${(confidence * 100).toStringAsFixed(1)}%)';
       });
     }
-  }
-
-  // Test mode (when backend is not ready)
-  void _testWithoutBackend() {
-    setState(() {
-      _drowsinessStatus = 'Testing mode (no backend)';
-    });
   }
 
   // Trigger alerts
@@ -349,7 +336,6 @@ class _HomePageState extends State<HomePage> {
     final user = _auth.currentUser;
     if (user == null) return;
 
-    // Get user settings
     final doc = await _firestore.collection('users').doc(user.uid).get();
     final data = doc.data();
 
@@ -358,17 +344,14 @@ class _HomePageState extends State<HomePage> {
     bool smsAlert = data?['smsAlert'] ?? false;
     int threshold = data?['drowsinessThreshold'] ?? 3;
 
-    // Sound alert
     if (soundAlert) {
       _playAlertSound();
     }
 
-    // Vibration alert
     if (vibrationAlert) {
       _triggerVibration();
     }
 
-    // SMS alert (after threshold)
     if (smsAlert && _detectionCount >= threshold) {
       _sendEmergencySMS(data);
     }
@@ -504,7 +487,6 @@ class _HomePageState extends State<HomePage> {
                       const SizedBox(height: 8),
                       ElevatedButton.icon(
                         onPressed: () {
-                          // TODO: Show camera feed from Bluetooth device
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                                 content:
@@ -571,7 +553,6 @@ class _HomePageState extends State<HomePage> {
                 ),
                 child: Column(
                   children: [
-                    // Status Icon
                     Container(
                       width: 80,
                       height: 80,
@@ -593,10 +574,7 @@ class _HomePageState extends State<HomePage> {
                             : const Color(0xFF78C841),
                       ),
                     ),
-
                     const SizedBox(height: 16),
-
-                    // Drowsiness Status
                     Text(
                       _drowsinessStatus,
                       style: TextStyle(
@@ -607,10 +585,7 @@ class _HomePageState extends State<HomePage> {
                             : Colors.black87,
                       ),
                     ),
-
                     const SizedBox(height: 8),
-
-                    // Current Status
                     Text(
                       _currentStatus,
                       style: TextStyle(
@@ -618,10 +593,7 @@ class _HomePageState extends State<HomePage> {
                         color: Colors.grey.shade600,
                       ),
                     ),
-
                     const SizedBox(height: 24),
-
-                    // Start/Stop Button
                     SizedBox(
                       width: double.infinity,
                       height: 60,
