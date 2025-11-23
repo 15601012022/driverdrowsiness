@@ -31,13 +31,15 @@ dependencies:
   permission_handler: ^11.3.1
 
   # TensorFlow Lite (compatible versions)
-  tflite_flutter: ^0.10.4
+  tflite_flutter: ^0.12.1
+
 
 
 
   # Image Processing
-  image: ^3.3.0
-  image_picker: ^1.1.2
+  image: ^4.1.7
+  image_picker: ^1.0.4
+  image_picker_ios: ^0.8.8
 
   # Networking
   http: ^1.2.2
@@ -72,6 +74,7 @@ flutter:
     - assets/sign.png
     - assets/model/eye_model.tflite
     - assets/model/yawn_model.tflite
+    - assets/alert_sound.mp3
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

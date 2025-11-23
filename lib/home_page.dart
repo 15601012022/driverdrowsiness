@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -13,47 +14,90 @@ import 'ml_model_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
-
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
   final MLModelService _mlModelService = MLModelService();
-
-  bool _soundAlert = true;
-  bool _vibrationAlert = true;
-  bool _smsAlert = false;
-  int _drowsinessThreshold = 3;
-
+  bool _isModelLoaded = false;
+  bool _isModelLoading = true;
   CameraController? _cameraController;
   List<CameraDescription>? _cameras;
   bool _isCameraInitialized = false;
   bool _isMonitoring = false;
 
   int _detectionCount = 0;
-  String _currentStatus = 'Ready to start';
+  String _currentStatus = 'Initializing...';
   String _drowsinessStatus = 'Normal';
   Timer? _captureTimer;
 
-  // Bluetooth camera variables
+  bool _soundAlert = true;
+  bool _vibrationAlert = true;
+  bool _smsAlert = false;
+  int _drowsinessThreshold = 3;
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  // Bluetooth webcam variables
   bool _isBluetoothCameraConnected = false;
   String _bluetoothStatus = 'Disconnected';
   List<BluetoothDevice> devicesList = [];
   BluetoothDevice? connectedDevice;
 
-  final AudioPlayer _audioPlayer = AudioPlayer();
-
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
   @override
   void initState() {
     super.initState();
-    _initializeCamera();
-    _mlModelService.loadModel().then((_) {
-      print("TFLite model loaded for on-device inference.");
-    });
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
+    // Initialize both camera and model
+    await Future.wait([
+      _initializeCamera(),
+      _loadModel(),
+    ]);
+
+    // Load user settings
+    await _loadUserSettings();
+  }
+
+  Future<void> _loadModel() async {
+    try {
+      setState(() {
+        _currentStatus = 'Loading AI model...';
+        _isModelLoading = true;
+      });
+
+      // Add timeout to prevent hanging
+      await _mlModelService.loadModel().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          print('⚠️ Model loading timed out - using fallback mode');
+          throw TimeoutException('Model loading timed out');
+        },
+      );
+
+      if (mounted) {
+        setState(() {
+          _isModelLoaded = true;
+          _isModelLoading = false;
+          _currentStatus = _isCameraInitialized ? 'Ready to start' : 'Waiting for camera...';
+        });
+        print("✅ TFLite models loaded for inference.");
+      }
+    } catch (e) {
+      print('⚠️ Error loading model: $e');
+      // Set model as loaded anyway to allow testing without model
+      if (mounted) {
+        setState(() {
+          _isModelLoaded = true; // Enable button anyway
+          _isModelLoading = false;
+          _currentStatus = _isCameraInitialized ? 'Ready to start (No AI)' : 'Waiting for camera...';
+        });
+      }
+    }
   }
 
   @override
@@ -65,34 +109,39 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _captureAndRunInference() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+    if (!_isCameraInitialized) {
+      print('Camera not initialized');
       return;
     }
 
-    final XFile image = await _cameraController!.takePicture();
-    final bytes = await File(image.path).readAsBytes();
+    try {
+      final XFile image = await _cameraController!.takePicture();
 
-    // Preprocess and infer using local tflite model
-    List<double> inputTensor = _mlModelService.preprocessCameraImage(bytes);
+      // If model is not loaded, just show camera is working
+      if (!_isModelLoaded) {
+        print('📸 Camera captured image - Model not available for inference');
+        setState(() {
+          _drowsinessStatus = 'Demo Mode';
+        });
+        return;
+      }
 
-    final prediction = await _mlModelService.runPrediction(inputTensor);
+      final Uint8List bytes = await File(image.path).readAsBytes();
 
-    print("Eye closed: ${prediction['eye_closed']}");
-    print("Yawn detected: ${prediction['yawn_detected']}");
+      List<double> inputTensor = _mlModelService.preprocessCameraFile(bytes);
+      final prediction = await _mlModelService.runPrediction(inputTensor);
 
-    // Update UI based on combined results
-    bool isDrowsy = prediction['eye_closed'] || prediction['yawn_detected'];
+      print("Eye closed: ${prediction['eye_closed']} (scores: ${prediction['eye_confidence']})");
+      print("Yawn detected: ${prediction['yawn_detected']} (scores: ${prediction['yawn_confidence']})");
 
-    if (isDrowsy) {
+      bool isDrowsy = prediction['eye_closed'] || prediction['yawn_detected'];
       setState(() {
-        _detectionCount++;
-        _drowsinessStatus = 'Drowsy Detected!';
+        _drowsinessStatus = isDrowsy ? 'Drowsy Detected!' : 'Normal';
+        if (isDrowsy) _detectionCount++;
       });
-      _triggerAlerts();
-    } else {
-      setState(() {
-        _drowsinessStatus = 'Normal';
-      });
+      if (isDrowsy) _triggerAlerts();
+    } catch (e) {
+      print('Error in inference: $e');
     }
   }
 
@@ -103,12 +152,14 @@ class _HomePageState extends State<HomePage> {
         final doc = await _firestore.collection('users').doc(user.uid).get();
         if (doc.exists) {
           final data = doc.data();
-          setState(() {
-            _soundAlert = data?['soundAlert'] ?? true;
-            _vibrationAlert = data?['vibrationAlert'] ?? true;
-            _smsAlert = data?['smsAlert'] ?? false;
-            _drowsinessThreshold = data?['drowsinessThreshold'] ?? 3;
-          });
+          if (mounted) {
+            setState(() {
+              _soundAlert = data?['soundAlert'] ?? true;
+              _vibrationAlert = data?['vibrationAlert'] ?? true;
+              _smsAlert = data?['smsAlert'] ?? false;
+              _drowsinessThreshold = data?['drowsinessThreshold'] ?? 3;
+            });
+          }
         }
       } catch (e) {
         print('Error loading user settings: $e');
@@ -116,22 +167,25 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Initialize camera
   Future<void> _initializeCamera() async {
     try {
+      setState(() => _currentStatus = 'Requesting camera permission...');
+
       final status = await Permission.camera.request();
       if (!status.isGranted) {
-        setState(() {
-          _currentStatus = 'Camera permission denied';
-        });
+        if (mounted) {
+          setState(() => _currentStatus = 'Camera permission denied');
+        }
         return;
       }
 
+      setState(() => _currentStatus = 'Initializing camera...');
+
       _cameras = await availableCameras();
       if (_cameras == null || _cameras!.isEmpty) {
-        setState(() {
-          _currentStatus = 'No camera found';
-        });
+        if (mounted) {
+          setState(() => _currentStatus = 'No camera found');
+        }
         return;
       }
 
@@ -151,18 +205,18 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           _isCameraInitialized = true;
-          _currentStatus = 'Camera ready';
+          _currentStatus = _isModelLoaded ? 'Ready to start' : 'Loading AI model...';
         });
+        print("✅ Camera initialized successfully");
       }
     } catch (e) {
       print('Error initializing camera: $e');
-      setState(() {
-        _currentStatus = 'Camera initialization failed';
-      });
+      if (mounted) {
+        setState(() => _currentStatus = 'Camera initialization failed: ${e.toString()}');
+      }
     }
   }
 
-  // Connect Bluetooth Camera (unchanged - optional feature)
   void _connectBluetoothCamera() async {
     if (_isBluetoothCameraConnected) {
       if (connectedDevice != null) {
@@ -191,27 +245,16 @@ class _HomePageState extends State<HomePage> {
   void _showBluetoothDevicesDialog() async {
     if (await Permission.bluetooth.request().isGranted) {
       print("Scanning for Bluetooth devices...");
-
-      setState(() {
-        _bluetoothStatus = 'Scanning...';
-      });
-
+      setState(() => _bluetoothStatus = 'Scanning...');
       devicesList.clear();
-
       FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
-
       var subscription = FlutterBluePlus.scanResults.listen((results) {
-        setState(() {
-          devicesList = results.map((r) => r.device).toList();
-        });
+        setState(() => devicesList = results.map((r) => r.device).toList());
       });
-
       await Future.delayed(const Duration(seconds: 5));
       FlutterBluePlus.stopScan();
       subscription.cancel();
-
       if (!mounted) return;
-
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -257,7 +300,6 @@ class _HomePageState extends State<HomePage> {
         _isBluetoothCameraConnected = true;
         _bluetoothStatus = 'Connected: ${device.name}';
       });
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Connected to ${device.name}!'),
@@ -265,16 +307,13 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     } catch (e) {
-      setState(() {
-        _bluetoothStatus = 'Connection failed';
-      });
+      setState(() => _bluetoothStatus = 'Connection failed');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error connecting: $e')),
       );
     }
   }
 
-  // Toggle monitoring
   void _toggleMonitoring() {
     if (_isMonitoring) {
       _stopMonitoring();
@@ -283,12 +322,13 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Start monitoring - now calls only TFLite inference
   void _startMonitoring() {
     if (!_isCameraInitialized) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Camera not initialized')),
+        const SnackBar(content: Text('Camera not initialized. Please check permissions.')),
       );
+      // Try to reinitialize camera
+      _initializeCamera();
       return;
     }
 
@@ -299,8 +339,13 @@ class _HomePageState extends State<HomePage> {
       _drowsinessStatus = 'Normal';
     });
 
+    print('🚀 Monitoring started - Camera ready');
+    if (!_isModelLoaded) {
+      print('⚠️ Running without AI model (demo mode)');
+    }
+
     _captureTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      _captureAndRunInference(); // direct camera + TFLite
+      _captureAndRunInference();
     });
   }
 
@@ -310,24 +355,15 @@ class _HomePageState extends State<HomePage> {
       _currentStatus = 'Monitoring stopped';
       _drowsinessStatus = 'Normal';
     });
-
     _captureTimer?.cancel();
   }
 
-  // Alert functions (unchanged)
   Future<void> _triggerAlerts() async {
-    if (_soundAlert) {
-      _playAlertSound();
-    }
-
-    if (_vibrationAlert) {
-      _triggerVibration();
-    }
-
+    if (_soundAlert) _playAlertSound();
+    if (_vibrationAlert) _triggerVibration();
     if (_smsAlert && _detectionCount >= _drowsinessThreshold) {
       final user = _auth.currentUser;
       if (user == null) return;
-
       final doc = await _firestore.collection('users').doc(user.uid).get();
       final data = doc.data();
       _sendEmergencySMS(data);
@@ -359,7 +395,6 @@ class _HomePageState extends State<HomePage> {
         'ALERT: ${userData['fullName']} may be drowsy while driving! Detected $_detectionCount times.'
       },
     );
-
     if (await canLaunchUrl(smsUri)) {
       await launchUrl(smsUri);
     }
@@ -367,6 +402,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    // Button is enabled as long as camera is ready
+    bool isButtonEnabled = _isCameraInitialized;
+
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
@@ -380,8 +418,7 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           children: [
             const SizedBox(height: 12),
-
-            // Bluetooth Webcam Connectivity Section (unchanged)
+            // Bluetooth Webcam Connectivity Section
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Container(
@@ -485,13 +522,11 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
-
             const SizedBox(height: 8),
-
-            // Camera Preview Section
+            // Camera preview
             if (_isCameraInitialized && _isMonitoring)
               Container(
-                height: 300,
+                height: 250,
                 margin: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(20),
@@ -507,8 +542,6 @@ class _HomePageState extends State<HomePage> {
                   child: CameraPreview(_cameraController!),
                 ),
               ),
-
-            // Status Section
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Container(
@@ -565,19 +598,21 @@ class _HomePageState extends State<HomePage> {
                         fontSize: 14,
                         color: Colors.grey.shade600,
                       ),
+                      textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 24),
                     SizedBox(
                       width: double.infinity,
                       height: 60,
                       child: ElevatedButton(
-                        onPressed:
-                        _isCameraInitialized ? _toggleMonitoring : null,
+                        onPressed: isButtonEnabled ? _toggleMonitoring : null,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _isMonitoring
                               ? Colors.red.shade400
                               : const Color(0xFF78C841),
                           foregroundColor: Colors.white,
+                          disabledBackgroundColor: Colors.grey.shade300,
+                          disabledForegroundColor: Colors.grey.shade500,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(16),
                           ),
@@ -606,13 +641,48 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                     ),
+                    // Show status message if button is disabled
+                    if (!isButtonEnabled) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.orange.shade200,
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              color: Colors.orange.shade700,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Waiting for camera initialization...',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.orange.shade900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
             ),
-
             const SizedBox(height: 24),
-
             // Stats Section
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -638,7 +708,6 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-
             const SizedBox(height: 32),
           ],
         ),
@@ -667,28 +736,16 @@ class _HomePageState extends State<HomePage> {
       ),
       child: Column(
         children: [
-          Icon(
-            icon,
-            size: 32,
-            color: color,
-          ),
+          Icon(icon, size: 32, color: color),
           const SizedBox(height: 12),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
-          ),
+          Text(value,
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: color,
+              )),
           const SizedBox(height: 4),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 13,
-              color: Colors.grey.shade600,
-            ),
-          ),
+          Text(title, style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
         ],
       ),
     );
