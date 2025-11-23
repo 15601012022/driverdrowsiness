@@ -67,9 +67,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - lib/assets/welcome.jpg
-    - lib/assets/welcome.png
-    - lib/assets/sign.png
+    - assets/welcome.jpg
+    - assets/welcome.png
+    - assets/sign.png
     - assets/model/eye_model.tflite
     - assets/model/yawn_model.tflite
 

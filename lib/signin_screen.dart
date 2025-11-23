@@ -150,7 +150,7 @@ class _SignInScreenState extends State<SignInScreen> {
                       // Background image
                       Positioned(
                         child: Image.asset(
-                          'lib/assets/sign.png',
+                          'assets/sign.png',
                           width: 300,
                           height: 250,
                           fit: BoxFit.cover,

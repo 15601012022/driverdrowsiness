@@ -27,7 +27,7 @@ class WelcomeScreen extends StatelessWidget {
                   height: 280,
                   padding: const EdgeInsets.all(20),
                   child: Image.asset(
-                    'lib/assets/welcome.jpg',
+                    'assets/welcome.jpg',
                     fit: BoxFit.contain,
                   ),
                   // If you don't have the image, use this placeholder:

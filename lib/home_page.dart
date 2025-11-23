@@ -1,12 +1,9 @@
-// home_page.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
@@ -29,13 +26,11 @@ class _HomePageState extends State<HomePage> {
   bool _smsAlert = false;
   int _drowsinessThreshold = 3;
 
-  // Camera variables
   CameraController? _cameraController;
   List<CameraDescription>? _cameras;
   bool _isCameraInitialized = false;
   bool _isMonitoring = false;
 
-  // Detection variables
   int _detectionCount = 0;
   String _currentStatus = 'Ready to start';
   String _drowsinessStatus = 'Normal';
@@ -47,15 +42,10 @@ class _HomePageState extends State<HomePage> {
   List<BluetoothDevice> devicesList = [];
   BluetoothDevice? connectedDevice;
 
-  // Alert variables
   final AudioPlayer _audioPlayer = AudioPlayer();
 
-  // Firebase
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  // ⚠️ CHANGE THIS TO YOUR COMPUTER'S IP ADDRESS
-  String backendUrl = 'http://192.168.29.210:5000/predict';
 
   @override
   void initState() {
@@ -82,18 +72,29 @@ class _HomePageState extends State<HomePage> {
     final XFile image = await _cameraController!.takePicture();
     final bytes = await File(image.path).readAsBytes();
 
-    // Preprocess image bytes to input tensor
+    // Preprocess and infer using local tflite model
     List<double> inputTensor = _mlModelService.preprocessCameraImage(bytes);
 
-
-    // Run inference
     final prediction = await _mlModelService.runPrediction(inputTensor);
 
-    print("Prediction: $prediction");
-    // Update UI or alerts based on prediction here
+    print("Eye closed: ${prediction['eye_closed']}");
+    print("Yawn detected: ${prediction['yawn_detected']}");
+
+    // Update UI based on combined results
+    bool isDrowsy = prediction['eye_closed'] || prediction['yawn_detected'];
+
+    if (isDrowsy) {
+      setState(() {
+        _detectionCount++;
+        _drowsinessStatus = 'Drowsy Detected!';
+      });
+      _triggerAlerts();
+    } else {
+      setState(() {
+        _drowsinessStatus = 'Normal';
+      });
+    }
   }
-
-
 
   Future<void> _loadUserSettings() async {
     final user = _auth.currentUser;
@@ -161,7 +162,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Connect Bluetooth Camera
+  // Connect Bluetooth Camera (unchanged - optional feature)
   void _connectBluetoothCamera() async {
     if (_isBluetoothCameraConnected) {
       if (connectedDevice != null) {
@@ -282,7 +283,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Start monitoring
+  // Start monitoring - now calls only TFLite inference
   void _startMonitoring() {
     if (!_isCameraInitialized) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -299,11 +300,10 @@ class _HomePageState extends State<HomePage> {
     });
 
     _captureTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
-      _captureAndSendFrame();
+      _captureAndRunInference(); // direct camera + TFLite
     });
   }
 
-  // Stop monitoring
   void _stopMonitoring() {
     setState(() {
       _isMonitoring = false;
@@ -314,76 +314,7 @@ class _HomePageState extends State<HomePage> {
     _captureTimer?.cancel();
   }
 
-  // Capture frame and send to backend - UPDATED FOR BASE64
-  Future<void> _captureAndSendFrame() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return;
-    }
-
-    try {
-      // Capture image
-      final XFile image = await _cameraController!.takePicture();
-
-      // Read image as bytes
-      final bytes = await File(image.path).readAsBytes();
-
-      // Convert to base64
-      final base64Image = base64Encode(bytes);
-
-      // Send to backend
-      await _sendFrameToBackend(base64Image);
-    } catch (e) {
-      print('Error capturing frame: $e');
-    }
-  }
-
-  // Send frame to Python backend - UPDATED FOR JSON
-  Future<void> _sendFrameToBackend(String base64Image) async {
-    try {
-      final response = await http.post(
-        Uri.parse(backendUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'image': base64Image}),
-      ).timeout(Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final jsonData = json.decode(response.body);
-        _processMLResponse(jsonData);
-      } else {
-        print('Backend error: ${response.statusCode}');
-        setState(() {
-          _drowsinessStatus = 'Backend error';
-        });
-      }
-    } catch (e) {
-      print('Error sending to backend: $e');
-      setState(() {
-        _drowsinessStatus = 'Connection failed';
-      });
-    }
-  }
-
-  // Process ML response - UPDATED FOR KERAS BACKEND RESPONSE
-  void _processMLResponse(Map<String, dynamic> response) {
-    // Backend returns: {'is_drowsy': bool, 'confidence': float, 'alert_count': int}
-    bool isDrowsy = response['is_drowsy'] ?? false;
-    double confidence = response['confidence'] ?? 0.0;
-
-    if (isDrowsy) {
-      setState(() {
-        _detectionCount++;
-        _drowsinessStatus = 'Drowsy Detected! (${(confidence * 100).toStringAsFixed(1)}%)';
-      });
-
-      _triggerAlerts();
-    } else {
-      setState(() {
-        _drowsinessStatus = 'Normal (${(confidence * 100).toStringAsFixed(1)}%)';
-      });
-    }
-  }
-
-  // Trigger alerts
+  // Alert functions (unchanged)
   Future<void> _triggerAlerts() async {
     if (_soundAlert) {
       _playAlertSound();
@@ -403,7 +334,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Play alert sound
   void _playAlertSound() async {
     try {
       await _audioPlayer.play(AssetSource('alert_sound.mp3'));
@@ -412,17 +342,14 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Trigger vibration
   void _triggerVibration() async {
     if (await Vibration.hasVibrator() ?? false) {
       Vibration.vibrate(duration: 1000, amplitude: 255);
     }
   }
 
-  // Send emergency SMS
   void _sendEmergencySMS(Map<String, dynamic>? userData) async {
     if (userData?['emergencyContact'] == null) return;
-
     final phone = userData!['emergencyContact']['phone'];
     final Uri smsUri = Uri(
       scheme: 'sms',
@@ -454,7 +381,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             const SizedBox(height: 12),
 
-            // Bluetooth Webcam Connectivity Section
+            // Bluetooth Webcam Connectivity Section (unchanged)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Container(
