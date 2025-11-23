@@ -12,6 +12,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'ml_model_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
@@ -21,6 +22,13 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  final MLModelService _mlModelService = MLModelService();
+
+  bool _soundAlert = true;
+  bool _vibrationAlert = true;
+  bool _smsAlert = false;
+  int _drowsinessThreshold = 3;
+
   // Camera variables
   CameraController? _cameraController;
   List<CameraDescription>? _cameras;
@@ -47,12 +55,15 @@ class _HomePageState extends State<HomePage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   // ⚠️ CHANGE THIS TO YOUR COMPUTER'S IP ADDRESS
-  String backendUrl = 'http://10.86.66.10:5000/predict';
+  String backendUrl = 'http://192.168.29.210:5000/predict';
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
+    _mlModelService.loadModel().then((_) {
+      print("TFLite model loaded for on-device inference.");
+    });
   }
 
   @override
@@ -61,6 +72,47 @@ class _HomePageState extends State<HomePage> {
     _captureTimer?.cancel();
     _audioPlayer.dispose();
     super.dispose();
+  }
+
+  Future<void> _captureAndRunInference() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      return;
+    }
+
+    final XFile image = await _cameraController!.takePicture();
+    final bytes = await File(image.path).readAsBytes();
+
+    // Preprocess image bytes to input tensor
+    List<double> inputTensor = _mlModelService.preprocessCameraImage(bytes);
+
+
+    // Run inference
+    final prediction = await _mlModelService.runPrediction(inputTensor);
+
+    print("Prediction: $prediction");
+    // Update UI or alerts based on prediction here
+  }
+
+
+
+  Future<void> _loadUserSettings() async {
+    final user = _auth.currentUser;
+    if (user != null) {
+      try {
+        final doc = await _firestore.collection('users').doc(user.uid).get();
+        if (doc.exists) {
+          final data = doc.data();
+          setState(() {
+            _soundAlert = data?['soundAlert'] ?? true;
+            _vibrationAlert = data?['vibrationAlert'] ?? true;
+            _smsAlert = data?['smsAlert'] ?? false;
+            _drowsinessThreshold = data?['drowsinessThreshold'] ?? 3;
+          });
+        }
+      } catch (e) {
+        print('Error loading user settings: $e');
+      }
+    }
   }
 
   // Initialize camera
@@ -333,26 +385,20 @@ class _HomePageState extends State<HomePage> {
 
   // Trigger alerts
   Future<void> _triggerAlerts() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-
-    final doc = await _firestore.collection('users').doc(user.uid).get();
-    final data = doc.data();
-
-    bool soundAlert = data?['soundAlert'] ?? true;
-    bool vibrationAlert = data?['vibrationAlert'] ?? true;
-    bool smsAlert = data?['smsAlert'] ?? false;
-    int threshold = data?['drowsinessThreshold'] ?? 3;
-
-    if (soundAlert) {
+    if (_soundAlert) {
       _playAlertSound();
     }
 
-    if (vibrationAlert) {
+    if (_vibrationAlert) {
       _triggerVibration();
     }
 
-    if (smsAlert && _detectionCount >= threshold) {
+    if (_smsAlert && _detectionCount >= _drowsinessThreshold) {
+      final user = _auth.currentUser;
+      if (user == null) return;
+
+      final doc = await _firestore.collection('users').doc(user.uid).get();
+      final data = doc.data();
       _sendEmergencySMS(data);
     }
   }
