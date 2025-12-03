@@ -12,6 +12,9 @@ dependencies:
 
   # UI
   cupertino_icons: ^1.0.8
+  flutter_launcher_icons: ^0.14.4
+  flutter_lints: ^4.0.0
+  flutter_native_splash: ^2.4.0
 
   # Firebase
   firebase_core: ^3.6.0
@@ -59,6 +62,7 @@ dependencies:
   audioplayers: ^6.1.0
   vibration: ^2.0.0
   url_launcher: ^6.3.1
+  telephony_sms: ^0.0.4
 
 dev_dependencies:
   flutter_test:
@@ -75,6 +79,25 @@ flutter:
     - assets/model/eye_model.tflite
     - assets/model/yawn_model.tflite
     - assets/alert_sound.mp3
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/logo.png"
+  adaptive_icon_foreground: "assets/logo.png"
+  adaptive_icon_background: "#FFFFFF"
+
+
+
+flutter_native_splash:
+  image: assets/logo.png
+  color: "#FFFFFF"
+  android: true
+  ios: true
+  android_gravity: center
+  ios_content_mode: scaleAspectFit
+  # You can set image_size to adjust logo size.
+
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

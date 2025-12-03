@@ -1,11 +1,10 @@
-
 // signup_screen.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
-
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({Key? key}) : super(key: key);
@@ -15,6 +14,7 @@ class SignUpScreen extends StatefulWidget {
 }
 
 class _SignUpScreenState extends State<SignUpScreen> {
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
@@ -30,7 +30,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
   File? _profileImage;
   final ImagePicker _picker = ImagePicker();
 
-  // Firebase instances
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
@@ -55,12 +54,24 @@ class _SignUpScreenState extends State<SignUpScreen> {
     }
   }
 
-  // Sign up function
-  // Sign up function
-  Future<void> _signUp() async {
-    if (!_formKey.currentState!.validate()) {
-      return;
+  Future<bool> _checkEmailExists(String email) async {
+    try {
+      await _auth.signInWithEmailAndPassword(
+        email: email,
+        password: 'dummy',
+      ).catchError((e) {
+        if (e.code != 'user-not-found') {
+          throw e;
+        }
+      });
+      return true;
+    } catch (e) {
+      return false;
     }
+  }
+
+  Future<void> _signUp() async {
+    if (!_formKey.currentState!.validate()) return;
 
     if (!_acceptTerms) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -72,31 +83,33 @@ class _SignUpScreenState extends State<SignUpScreen> {
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      // Create user with Firebase Auth
+      bool emailExists = await _checkEmailExists(_emailController.text.trim());
+      if (emailExists) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Email already registered'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        setState(() => _isLoading = false);
+        return;
+      }
+
       UserCredential userCredential = await _auth.createUserWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      // If login is successful, navigate to home page and remove all previous pages
-      Navigator.pushNamedAndRemoveUntil(
-          context,
-          '/account',      // Or '/main' or whatever main route you use
-              (route) => false // Removes all routes from stack so "back" can't go to login
-      );
-
       User? user = userCredential.user;
 
       if (user != null) {
-        // Update user display name
         await user.updateDisplayName(_nameController.text.trim());
 
-        // Save user data to Firestore
         await _firestore.collection('users').doc(user.uid).set({
           'fullName': _nameController.text.trim(),
           'email': _emailController.text.trim(),
@@ -105,10 +118,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
           'educationLevel': _educationController.text.trim(),
           'course': _courseController.text.trim(),
           'createdAt': DateTime.now(),
-          'profileImageUrl': '', // You can add image upload here
+          'profileImageUrl': '',
         });
 
-        // Navigate to Account page  ← CHANGED FROM '/signin' to '/account'
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -116,7 +128,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
               backgroundColor: Colors.green,
             ),
           );
-          Navigator.pushReplacementNamed(context, '/account');  // ← THIS LINE CHANGED
+          Navigator.pushNamedAndRemoveUntil(context, '/account', (route) => false);
         }
       }
     } on FirebaseAuthException catch (e) {
@@ -138,11 +150,56 @@ class _SignUpScreenState extends State<SignUpScreen> {
         );
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _signUpWithGoogle() async {
+    setState(() => _isLoading = true);
+
+    try {
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        setState(() => _isLoading = false);
+        return;
       }
+
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      UserCredential userCredential = await _auth.signInWithCredential(credential);
+      User? user = userCredential.user;
+
+      if (user != null) {
+        DocumentSnapshot doc = await _firestore.collection('users').doc(user.uid).get();
+        if (!doc.exists) {
+          await _firestore.collection('users').doc(user.uid).set({
+            'fullName': user.displayName ?? 'User',
+            'email': user.email,
+            'location': '',
+            'language': 'English',
+            'educationLevel': '',
+            'course': '',
+            'createdAt': DateTime.now(),
+            'profileImageUrl': '',
+          });
+        }
+
+        if (mounted) {
+          Navigator.pushNamedAndRemoveUntil(context, '/account', (route) => false);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Google Sign-Up Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -153,7 +210,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // Background shape
             Positioned(
               top: 0,
               left: 0,
@@ -163,8 +219,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 painter: SignUpShapePainter(),
               ),
             ),
-
-            // Main content
             SingleChildScrollView(
               child: Column(
                 children: [
@@ -174,9 +228,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       alignment: Alignment.topLeft,
                       child: IconButton(
                         icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-                        onPressed: () {
-                          Navigator.pop(context);
-                        },
+                        onPressed: () => Navigator.pop(context),
                       ),
                     ),
                   ),
@@ -197,8 +249,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     ),
                   ),
                   const SizedBox(height: 25),
-
-                  // Profile photo
                   GestureDetector(
                     onTap: _pickImage,
                     child: Container(
@@ -211,41 +261,28 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       ),
                       child: _profileImage != null
                           ? ClipOval(
-                        child: Image.file(
-                          _profileImage!,
-                          fit: BoxFit.cover,
-                        ),
+                        child: Image.file(_profileImage!, fit: BoxFit.cover),
                       )
                           : Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
-                            Icons.camera_alt_outlined,
-                            size: 32,
-                            color: Colors.grey.shade600,
-                          ),
+                          Icon(Icons.camera_alt_outlined, size: 32, color: Colors.grey.shade600),
                           const SizedBox(height: 4),
                           Text(
                             'Add Photo',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600,
-                            ),
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                           ),
                         ],
                       ),
                     ),
                   ),
                   const SizedBox(height: 32),
-
-                  // Form
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 40.0),
                     child: Form(
                       key: _formKey,
                       child: Column(
                         children: [
-                          // Name field
                           TextFormField(
                             controller: _nameController,
                             decoration: InputDecoration(
@@ -255,23 +292,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
                               fillColor: Colors.grey.shade50,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(color: Colors.blueGrey.shade900,),
+                                borderSide: BorderSide(color: Colors.blueGrey.shade900),
                               ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 16,
-                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter your name';
-                              }
+                              if (value == null || value.isEmpty) return 'Please enter your name';
                               return null;
                             },
                           ),
                           const SizedBox(height: 16),
-
-                          // Email field
                           TextFormField(
                             controller: _emailController,
                             keyboardType: TextInputType.emailAddress,
@@ -282,26 +312,17 @@ class _SignUpScreenState extends State<SignUpScreen> {
                               fillColor: Colors.grey.shade50,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(color: Colors.blueGrey.shade900,),
+                                borderSide: BorderSide(color: Colors.blueGrey.shade900),
                               ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 16,
-                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter your email';
-                              }
-                              if (!value.contains('@')) {
-                                return 'Please enter a valid email';
-                              }
+                              if (value == null || value.isEmpty) return 'Please enter your email';
+                              if (!value.contains('@')) return 'Please enter a valid email';
                               return null;
                             },
                           ),
                           const SizedBox(height: 16),
-
-                          // Password field
                           TextFormField(
                             controller: _passwordController,
                             obscureText: _obscurePassword,
@@ -312,76 +333,48 @@ class _SignUpScreenState extends State<SignUpScreen> {
                               fillColor: Colors.grey.shade50,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(color: Colors.blueGrey.shade900,),
+                                borderSide: BorderSide(color: Colors.blueGrey.shade900),
                               ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 16,
-                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                               suffixIcon: IconButton(
                                 icon: Icon(
-                                  _obscurePassword
-                                      ? Icons.visibility_off
-                                      : Icons.visibility,
+                                  _obscurePassword ? Icons.visibility_off : Icons.visibility,
                                   color: Colors.grey,
                                 ),
-                                onPressed: () {
-                                  setState(() {
-                                    _obscurePassword = !_obscurePassword;
-                                  });
-                                },
+                                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                               ),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter your password';
-                              }
-                              if (value.length < 6) {
-                                return 'Password must be at least 6 characters';
-                              }
+                              if (value == null || value.isEmpty) return 'Please enter your password';
+                              if (value.length < 6) return 'Password must be at least 6 characters';
                               return null;
                             },
                           ),
                           const SizedBox(height: 16),
-
-                          // Terms and conditions checkbox
                           Row(
                             children: [
                               Checkbox(
                                 value: _acceptTerms,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _acceptTerms = value ?? false;
-                                  });
-                                },
+                                onChanged: (value) => setState(() => _acceptTerms = value ?? false),
                                 activeColor: const Color(0xFF78C841),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                               ),
                               Expanded(
                                 child: Text(
                                   'I accept the policy and terms',
-                                  style: TextStyle(
-                                    color: Colors.grey.shade600,
-                                    fontSize: 14,
-                                  ),
+                                  style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                                 ),
                               ),
                             ],
                           ),
                           const SizedBox(height: 24),
-
-                          // Sign up button
                           ElevatedButton(
-                            onPressed: _isLoading ? null : _signUp,  // ← CHANGE THIS LINE
+                            onPressed: _isLoading ? null : _signUp,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF78C841),
                               foregroundColor: Colors.white,
                               minimumSize: const Size(double.infinity, 56),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(28),
-                              ),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
                               elevation: 0,
                             ),
                             child: _isLoading
@@ -389,31 +382,21 @@ class _SignUpScreenState extends State<SignUpScreen> {
                               height: 20,
                               width: 20,
                               child: CircularProgressIndicator(
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  Colors.white,
-                                ),
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                                 strokeWidth: 2,
                               ),
                             )
                                 : const Text(
-                              'Sign up',  // ← Also change button text from "Sign in" to "Sign up"
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          // Or sign up with
-                          Text(
-                            'Or sign up with',
-                            style: TextStyle(
-                              color: Colors.blueGrey.shade900,
-                              fontSize: 14,
+                              'Sign up',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                             ),
                           ),
                           const SizedBox(height: 16),
-
-                          // Social login buttons
+                          Text(
+                            'Or sign up with',
+                            style: TextStyle(color: Colors.blueGrey.shade900, fontSize: 14),
+                          ),
+                          const SizedBox(height: 16),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
@@ -424,7 +407,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                               const SizedBox(width: 20),
                               _SocialLoginButton(
                                 icon: Icons.g_mobiledata,
-                                onPressed: () {},
+                                onPressed: _signUpWithGoogle, // ← Google Sign-Up
                               ),
                               const SizedBox(width: 20),
                               _SocialLoginButton(
@@ -434,22 +417,15 @@ class _SignUpScreenState extends State<SignUpScreen> {
                             ],
                           ),
                           const SizedBox(height: 24),
-
-                          // Already have account
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(
                                 'Already have an account? ',
-                                style: TextStyle(
-                                  color: Colors.grey.shade600,
-                                  fontSize: 14,
-                                ),
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                               ),
                               TextButton(
-                                onPressed: () {
-                                  Navigator.pop(context);
-                                },
+                                onPressed: () => Navigator.pop(context),
                                 style: TextButton.styleFrom(
                                   padding: EdgeInsets.zero,
                                   minimumSize: const Size(0, 0),
@@ -492,18 +468,8 @@ class SignUpShapePainter extends CustomPainter {
     path.moveTo(0, 0);
     path.lineTo(size.width, 0);
     path.lineTo(size.width, size.height * 0.65);
-    path.quadraticBezierTo(
-      size.width * 0.65,
-      size.height * 0.75,
-      size.width * 0.35,
-      size.height * 0.7,
-    );
-    path.quadraticBezierTo(
-      size.width * 0.15,
-      size.height * 0.67,
-      0,
-      size.height * 0.55,
-    );
+    path.quadraticBezierTo(size.width * 0.65, size.height * 0.75, size.width * 0.35, size.height * 0.7);
+    path.quadraticBezierTo(size.width * 0.15, size.height * 0.67, 0, size.height * 0.55);
     path.close();
 
     canvas.drawPath(path, paint);
@@ -517,10 +483,7 @@ class _SocialLoginButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onPressed;
 
-  const _SocialLoginButton({
-    required this.icon,
-    required this.onPressed,
-  });
+  const _SocialLoginButton({required this.icon, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {

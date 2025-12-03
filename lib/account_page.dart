@@ -78,29 +78,35 @@ class _AccountPageState extends State<AccountPage> {
   Future<void> _sendEmergencySMS() async {
     if (userData != null && userData!['emergencyContact'] != null) {
       final emergencyPhone = userData!['emergencyContact']['phone'];
+      final message = 'Emergency Alert! Please contact ${userData!['fullName']} immediately.';
+
       final Uri smsUri = Uri(
         scheme: 'sms',
         path: emergencyPhone,
-        queryParameters: {
-          'body': 'Emergency Alert! Please contact ${userData!['fullName']} immediately.'
-        },
+        queryParameters: {'body': message},
       );
 
       try {
         if (await canLaunchUrl(smsUri)) {
           await launchUrl(smsUri);
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not launch SMS app')),
-          );
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('SMS app not available')),
+            );
+          }
         }
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
+        print('Error: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e')),
+          );
+        }
       }
     }
   }
+
 
   @override
   Widget build(BuildContext context) {

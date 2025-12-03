@@ -1,18 +1,18 @@
-
 // signin_screen.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({Key? key}) : super(key: key);
-
 
   @override
   State<SignInScreen> createState() => _SignInScreenState();
 }
 
 class _SignInScreenState extends State<SignInScreen> {
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -22,40 +22,21 @@ class _SignInScreenState extends State<SignInScreen> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  // Sign in function
-  // Sign in function
   Future<void> signIn() async {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
+    if (!_formKey.currentState!.validate()) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      // Sign in with Firebase Auth
       UserCredential userCredential = await _auth.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      // If login is successful, navigate to home page and remove all previous pages
-      Navigator.pushNamedAndRemoveUntil(
-          context,
-          '/account',      // Or '/main' or whatever main route you use
-              (route) => false // Removes all routes from stack so "back" can't go to login
-      );
-
-
       User? user = userCredential.user;
-
       if (user != null) {
-        // Check if user data exists in Firestore
         DocumentSnapshot doc = await _firestore.collection('users').doc(user.uid).get();
-
         if (!doc.exists) {
-          // Create user document if it doesn't exist
           await _firestore.collection('users').doc(user.uid).set({
             'email': user.email,
             'fullName': user.displayName ?? 'User',
@@ -67,38 +48,74 @@ class _SignInScreenState extends State<SignInScreen> {
           });
         }
 
-        // Navigate to account page
         if (mounted) {
-          Navigator.pushReplacementNamed(context, '/account');  // ← CHANGED FROM /home
+          Navigator.pushNamedAndRemoveUntil(context, '/account', (route) => false);
         }
       }
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(e.message ?? 'Sign in failed'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text(e.message ?? 'Sign in failed'), backgroundColor: Colors.red),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  Future<void> _signInWithGoogle() async {
+    setState(() => _isLoading = true);
+
+    try {
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      UserCredential userCredential = await _auth.signInWithCredential(credential);
+      User? user = userCredential.user;
+
+      if (user != null) {
+        DocumentSnapshot doc = await _firestore.collection('users').doc(user.uid).get();
+        if (!doc.exists) {
+          await _firestore.collection('users').doc(user.uid).set({
+            'email': user.email,
+            'fullName': user.displayName ?? 'User',
+            'location': '',
+            'language': 'English',
+            'educationLevel': '',
+            'course': '',
+            'createdAt': DateTime.now(),
+          });
+        }
+
+        if (mounted) {
+          Navigator.pushNamedAndRemoveUntil(context, '/account', (route) => false);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Google Sign-In Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -114,7 +131,6 @@ class _SignInScreenState extends State<SignInScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // Background shape
             Positioned(
               top: 0,
               left: 0,
@@ -124,8 +140,6 @@ class _SignInScreenState extends State<SignInScreen> {
                 painter: SignInShapePainter(),
               ),
             ),
-
-            // Main content
             SingleChildScrollView(
               child: Column(
                 children: [
@@ -135,19 +149,14 @@ class _SignInScreenState extends State<SignInScreen> {
                       alignment: Alignment.topLeft,
                       child: IconButton(
                         icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-                        onPressed: () {
-                          Navigator.pop(context);
-                        },
+                        onPressed: () => Navigator.pop(context),
                       ),
                     ),
                   ),
                   const SizedBox(height: 22),
-
-                  // Welcome Back with background image
                   Stack(
                     alignment: Alignment.center,
                     children: [
-                      // Background image
                       Positioned(
                         child: Image.asset(
                           'assets/sign.png',
@@ -156,7 +165,6 @@ class _SignInScreenState extends State<SignInScreen> {
                           fit: BoxFit.cover,
                         ),
                       ),
-                      // Welcome Back text
                       const Padding(
                         padding: EdgeInsets.only(left: 30.0, top: 5.0),
                         child: Align(
@@ -175,15 +183,12 @@ class _SignInScreenState extends State<SignInScreen> {
                     ],
                   ),
                   const SizedBox(height: 50),
-
-                  // Form
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 5.0),
                     child: Form(
                       key: _formKey,
                       child: Column(
                         children: [
-                          // Email field
                           TextFormField(
                             controller: _emailController,
                             keyboardType: TextInputType.emailAddress,
@@ -194,23 +199,16 @@ class _SignInScreenState extends State<SignInScreen> {
                               fillColor: Colors.grey.shade50,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(color: Colors.black),
+                                borderSide: const BorderSide(color: Colors.black),
                               ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 16,
-                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 16),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter your email';
-                              }
+                              if (value == null || value.isEmpty) return 'Please enter your email';
                               return null;
                             },
                           ),
                           const SizedBox(height: 14),
-
-                          // Password field
                           TextFormField(
                             controller: _passwordController,
                             obscureText: _obscurePassword,
@@ -221,36 +219,23 @@ class _SignInScreenState extends State<SignInScreen> {
                               fillColor: Colors.grey.shade50,
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide(color: Colors.black),
+                                borderSide: const BorderSide(color: Colors.black),
                               ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 16,
-                              ),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 16),
                               suffixIcon: IconButton(
                                 icon: Icon(
-                                  _obscurePassword
-                                      ? Icons.visibility_off
-                                      : Icons.visibility,
+                                  _obscurePassword ? Icons.visibility_off : Icons.visibility,
                                   color: Colors.grey,
                                 ),
-                                onPressed: () {
-                                  setState(() {
-                                    _obscurePassword = !_obscurePassword;
-                                  });
-                                },
+                                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                               ),
                             ),
                             validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Please enter your password';
-                              }
+                              if (value == null || value.isEmpty) return 'Please enter your password';
                               return null;
                             },
                           ),
                           const SizedBox(height: 14),
-
-                          // Fingerprint sign in
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
@@ -258,26 +243,18 @@ class _SignInScreenState extends State<SignInScreen> {
                               const SizedBox(width: 8),
                               Text(
                                 'Sign in using fingerprint',
-                                style: TextStyle(
-                                  color: Colors.black,
-                                  fontSize: 14,
-                                ),
+                                style: TextStyle(color: Colors.black, fontSize: 14),
                               ),
                             ],
                           ),
                           const SizedBox(height: 32),
-
-                          // Sign in button
-
                           ElevatedButton(
-                            onPressed: _isLoading ? null : signIn,  // ← Call the signIn function
+                            onPressed: _isLoading ? null : signIn,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF78C841),
                               foregroundColor: Colors.white,
                               minimumSize: const Size(double.infinity, 56),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(28),
-                              ),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
                               elevation: 0,
                             ),
                             child: _isLoading
@@ -285,34 +262,18 @@ class _SignInScreenState extends State<SignInScreen> {
                               height: 20,
                               width: 20,
                               child: CircularProgressIndicator(
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  Colors.white,
-                                ),
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                                 strokeWidth: 2,
                               ),
                             )
-                                : const Text(
-                              'Sign in',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
+                                : const Text('Sign in', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                           ),
                           const SizedBox(height: 24),
-
-
-                          // Or sign in with
                           Text(
                             'Or sign in with',
-                            style: TextStyle(
-                              color: Colors.grey.shade900,
-                              fontSize: 14,
-                            ),
+                            style: TextStyle(color: Colors.grey.shade900, fontSize: 14),
                           ),
                           const SizedBox(height: 16),
-
-                          // Social login buttons
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
@@ -323,7 +284,7 @@ class _SignInScreenState extends State<SignInScreen> {
                               const SizedBox(width: 20),
                               _SocialLoginButton(
                                 icon: Icons.g_mobiledata,
-                                onPressed: () {},
+                                onPressed: _signInWithGoogle, // ← Google Sign-In
                               ),
                               const SizedBox(width: 20),
                               _SocialLoginButton(
@@ -333,33 +294,21 @@ class _SignInScreenState extends State<SignInScreen> {
                             ],
                           ),
                           const SizedBox(height: 24),
-
-                          // Sign up and Forgot password
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               TextButton(
-                                onPressed: () {
-                                  Navigator.pushNamed(context, '/signup');
-                                },
+                                onPressed: () => Navigator.pushNamed(context, '/signup'),
                                 child: Text(
                                   'Sign up',
-                                  style: TextStyle(
-                                    color: Colors.blueGrey.shade900,
-                                    fontSize: 14,
-                                  ),
+                                  style: TextStyle(color: Colors.blueGrey.shade900, fontSize: 14),
                                 ),
                               ),
                               TextButton(
-                                onPressed: () {
-                                  // Handle forgot password
-                                },
+                                onPressed: () {},
                                 child: Text(
                                   'Forget Password?',
-                                  style: TextStyle(
-                                    color: Colors.blueGrey.shade900,
-                                    fontSize: 14,
-                                  ),
+                                  style: TextStyle(color: Colors.blueGrey.shade900, fontSize: 14),
                                 ),
                               ),
                             ],
@@ -379,7 +328,6 @@ class _SignInScreenState extends State<SignInScreen> {
   }
 }
 
-// Custom Painter for the background shape
 class SignInShapePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -391,12 +339,7 @@ class SignInShapePainter extends CustomPainter {
     path.moveTo(0, 0);
     path.lineTo(size.width, 0);
     path.lineTo(size.width, size.height * 0.60);
-    path.quadraticBezierTo(
-      size.width / 2,
-      size.height,
-      0,
-      size.height * 0.60,
-    );
+    path.quadraticBezierTo(size.width / 2, size.height, 0, size.height * 0.60);
     path.close();
 
     canvas.drawPath(path, paint);
@@ -406,25 +349,18 @@ class SignInShapePainter extends CustomPainter {
   bool shouldRepaint(SignInShapePainter oldDelegate) => false;
 }
 
-// Social Login Button Widget
 class _SocialLoginButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onPressed;
 
-  const _SocialLoginButton({
-    required this.icon,
-    required this.onPressed,
-  });
+  const _SocialLoginButton({required this.icon, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(
-          color: Colors.grey.shade700,
-          width: 1.5,
-        ),
+        border: Border.all(color: Colors.grey.shade700, width: 1.5),
       ),
       child: Material(
         color: Colors.transparent,
@@ -433,11 +369,7 @@ class _SocialLoginButton extends StatelessWidget {
           customBorder: const CircleBorder(),
           child: Padding(
             padding: const EdgeInsets.all(12.0),
-            child: Icon(
-              icon,
-              color: Colors.grey.shade700,
-              size: 20,
-            ),
+            child: Icon(icon, color: Colors.grey.shade700, size: 20),
           ),
         ),
       ),

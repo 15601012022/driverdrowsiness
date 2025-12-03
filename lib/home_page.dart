@@ -19,6 +19,11 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  Timer? _vibrationTimer;
+  Timer? _alertDelayTimer;          // NEW: delay timer for popup
+  bool _isAlertDialogOpen = false;  // Prevent duplicate dialogs
+  bool _isAlertPending = false;     // NEW: prevent multiple queued alerts
+
   final MLModelService _mlModelService = MLModelService();
   bool _isModelLoaded = false;
   bool _isModelLoading = true;
@@ -46,6 +51,92 @@ class _HomePageState extends State<HomePage> {
   List<BluetoothDevice> devicesList = [];
   BluetoothDevice? connectedDevice;
 
+  // pop alert to stop
+  void _showAlertDialog() {
+    if (_isAlertDialogOpen) return;
+
+    _isAlertDialogOpen = true;
+    print('🔴 Alert dialog opened');
+
+    _startContinuousVibration();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.red, size: 28),
+            const SizedBox(width: 12),
+            const Text('Alert!', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Drowsiness Detected!',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Detection count: $_detectionCount',
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              print('🟢 Alert stopped');
+              _audioPlayer.stop();
+              _stopContinuousVibration();
+              _alertDelayTimer?.cancel();
+              _isAlertDialogOpen = false;
+              _isAlertPending = false;
+              Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red.shade400,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Stop Alert', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    ).then((_) {
+      _isAlertDialogOpen = false;
+      _stopContinuousVibration();
+    });
+
+    // Auto-close after 30 seconds
+    Future.delayed(const Duration(seconds: 30), () {
+      if (_isAlertDialogOpen && mounted) {
+        _audioPlayer.stop();
+        Navigator.pop(context);
+        _isAlertDialogOpen = false;
+        _isAlertPending = false;
+        _stopContinuousVibration();
+        print('⏱️ Alert auto-closed after 30 seconds');
+      }
+    });
+  }
+
+  void _startContinuousVibration() async {
+    if (await Vibration.hasVibrator() ?? false) {
+      _vibrationTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+        Vibration.vibrate(duration: 300, amplitude: 255);
+      });
+    }
+  }
+
+  void _stopContinuousVibration() {
+    _vibrationTimer?.cancel();
+    _vibrationTimer = null;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -53,13 +144,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _initializeApp() async {
-    // Initialize both camera and model
     await Future.wait([
       _initializeCamera(),
       _loadModel(),
     ]);
-
-    // Load user settings
     await _loadUserSettings();
   }
 
@@ -70,7 +158,6 @@ class _HomePageState extends State<HomePage> {
         _isModelLoading = true;
       });
 
-      // Add timeout to prevent hanging
       await _mlModelService.loadModel().timeout(
         const Duration(seconds: 10),
         onTimeout: () {
@@ -89,10 +176,9 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (e) {
       print('⚠️ Error loading model: $e');
-      // Set model as loaded anyway to allow testing without model
       if (mounted) {
         setState(() {
-          _isModelLoaded = true; // Enable button anyway
+          _isModelLoaded = true;
           _isModelLoading = false;
           _currentStatus = _isCameraInitialized ? 'Ready to start (No AI)' : 'Waiting for camera...';
         });
@@ -104,7 +190,9 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _cameraController?.dispose();
     _captureTimer?.cancel();
+    _alertDelayTimer?.cancel();
     _audioPlayer.dispose();
+    _vibrationTimer?.cancel();
     super.dispose();
   }
 
@@ -117,7 +205,6 @@ class _HomePageState extends State<HomePage> {
     try {
       final XFile image = await _cameraController!.takePicture();
 
-      // If model is not loaded, just show camera is working
       if (!_isModelLoaded) {
         print('📸 Camera captured image - Model not available for inference');
         setState(() {
@@ -135,11 +222,18 @@ class _HomePageState extends State<HomePage> {
       print("Yawn detected: ${prediction['yawn_detected']} (scores: ${prediction['yawn_confidence']})");
 
       bool isDrowsy = prediction['eye_closed'] || prediction['yawn_detected'];
+
+      print('🔍 Drowsy: $isDrowsy, Eye: ${prediction['eye_closed']}, Yawn: ${prediction['yawn_detected']}');
+
       setState(() {
         _drowsinessStatus = isDrowsy ? 'Drowsy Detected!' : 'Normal';
         if (isDrowsy) _detectionCount++;
       });
-      if (isDrowsy) _triggerAlerts();
+
+      if (isDrowsy) {
+        print('⚠️ Triggering alerts...');
+        _triggerAlerts();
+      }
     } catch (e) {
       print('Error in inference: $e');
     }
@@ -196,8 +290,9 @@ class _HomePageState extends State<HomePage> {
 
       _cameraController = CameraController(
         frontCamera,
-        ResolutionPreset.medium,
+        ResolutionPreset.low,
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.nv21,
       );
 
       await _cameraController!.initialize();
@@ -327,7 +422,6 @@ class _HomePageState extends State<HomePage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Camera not initialized. Please check permissions.')),
       );
-      // Try to reinitialize camera
       _initializeCamera();
       return;
     }
@@ -356,18 +450,9 @@ class _HomePageState extends State<HomePage> {
       _drowsinessStatus = 'Normal';
     });
     _captureTimer?.cancel();
-  }
-
-  Future<void> _triggerAlerts() async {
-    if (_soundAlert) _playAlertSound();
-    if (_vibrationAlert) _triggerVibration();
-    if (_smsAlert && _detectionCount >= _drowsinessThreshold) {
-      final user = _auth.currentUser;
-      if (user == null) return;
-      final doc = await _firestore.collection('users').doc(user.uid).get();
-      final data = doc.data();
-      _sendEmergencySMS(data);
-    }
+    _alertDelayTimer?.cancel();
+    _isAlertPending = false;
+    print('🛑 Monitoring stopped, pending alerts cancelled');
   }
 
   void _playAlertSound() async {
@@ -378,31 +463,85 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _triggerVibration() async {
+  Future<void> _triggerVibration() async {
     if (await Vibration.hasVibrator() ?? false) {
       Vibration.vibrate(duration: 1000, amplitude: 255);
     }
   }
 
-  void _sendEmergencySMS(Map<String, dynamic>? userData) async {
-    if (userData?['emergencyContact'] == null) return;
-    final phone = userData!['emergencyContact']['phone'];
-    final Uri smsUri = Uri(
-      scheme: 'sms',
-      path: phone,
-      queryParameters: {
-        'body':
-        'ALERT: ${userData['fullName']} may be drowsy while driving! Detected $_detectionCount times.'
-      },
-    );
-    if (await canLaunchUrl(smsUri)) {
-      await launchUrl(smsUri);
+  Future<void> _triggerAlerts() async {
+    if (_isAlertPending) {
+      print('⚠️ Alert already pending, ignoring');
+      return;
+    }
+
+    _isAlertPending = true;
+    print('⏳ Alert pending...');
+
+    if (_soundAlert) _playAlertSound();
+    if (_vibrationAlert) _triggerVibration();
+
+    _alertDelayTimer = Timer(const Duration(seconds: 10), () {
+      if (!_isAlertDialogOpen && mounted && _isMonitoring) {
+        _showAlertDialog();
+      }
+      _isAlertPending = false;
+    });
+
+    if (_smsAlert && _detectionCount >= _drowsinessThreshold) {
+      final user = _auth.currentUser;
+      if (user == null) return;
+      final doc = await _firestore.collection('users').doc(user.uid).get();
+      final data = doc.data();
+      _sendEmergencySMS(data);
+    }
+  }
+
+  Future<void> _sendEmergencySMS(Map<String, dynamic>? userData) async {
+    if (userData?['emergencyContact'] == null) {
+      print('❌ No emergency contact found');
+      return;
+    }
+
+    final phone = userData!['emergencyContact']['phone'].replaceAll(RegExp(r'[^\d+]'), '');
+    final message = 'ALERT: ${userData['fullName']} may be drowsy while driving! Detected $_detectionCount times.';
+
+    try {
+      final smsUri = Uri(scheme: 'sms', path: phone, queryParameters: {'body': message});
+
+      if (await canLaunchUrl(smsUri)) {
+        await launchUrl(smsUri);
+        print('✅ SMS intent launched for $phone');
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('SMS sent to $phone'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      } else {
+        print('❌ Cannot launch SMS app');
+        throw 'SMS app not available';
+      }
+    } catch (e) {
+      print('❌ SMS Error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('SMS Error: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Button is enabled as long as camera is ready
     bool isButtonEnabled = _isCameraInitialized;
 
     return Scaffold(
@@ -418,7 +557,6 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           children: [
             const SizedBox(height: 12),
-            // Bluetooth Webcam Connectivity Section
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Container(
@@ -454,16 +592,12 @@ class _HomePageState extends State<HomePage> {
                         ElevatedButton.icon(
                           onPressed: _connectBluetoothCamera,
                           icon: Icon(
-                            _isBluetoothCameraConnected
-                                ? Icons.link_off
-                                : Icons.link,
+                            _isBluetoothCameraConnected ? Icons.link_off : Icons.link,
                             size: 18,
                             color: Colors.white,
                           ),
                           label: Text(
-                            _isBluetoothCameraConnected
-                                ? 'Disconnect'
-                                : 'Connect',
+                            _isBluetoothCameraConnected ? 'Disconnect' : 'Connect',
                             style: TextStyle(fontSize: 13),
                           ),
                           style: ElevatedButton.styleFrom(
@@ -471,10 +605,9 @@ class _HomePageState extends State<HomePage> {
                                 ? Colors.red.shade400
                                 : Colors.blue,
                             foregroundColor: Colors.white,
-                            minimumSize: Size(70, 32),
+                            minimumSize: const Size(70, 32),
                             elevation: 0,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
@@ -487,9 +620,7 @@ class _HomePageState extends State<HomePage> {
                       'Status: $_bluetoothStatus',
                       style: TextStyle(
                         fontSize: 13,
-                        color: _isBluetoothCameraConnected
-                            ? Colors.green
-                            : Colors.grey,
+                        color: _isBluetoothCameraConnected ? Colors.green : Colors.grey,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -498,9 +629,7 @@ class _HomePageState extends State<HomePage> {
                       ElevatedButton.icon(
                         onPressed: () {
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content:
-                                Text('Camera feed will be shown here')),
+                            const SnackBar(content: Text('Camera feed will be shown here')),
                           );
                         },
                         icon: const Icon(Icons.camera_alt, size: 18),
@@ -508,10 +637,9 @@ class _HomePageState extends State<HomePage> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green.shade600,
                           foregroundColor: Colors.white,
-                          minimumSize: Size(110, 30),
+                          minimumSize: const Size(110, 30),
                           elevation: 0,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
@@ -523,7 +651,6 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             const SizedBox(height: 8),
-            // Camera preview
             if (_isCameraInitialized && _isMonitoring)
               Container(
                 height: 250,
@@ -531,9 +658,7 @@ class _HomePageState extends State<HomePage> {
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
-                    color: _drowsinessStatus.contains('Drowsy')
-                        ? Colors.red
-                        : const Color(0xFF78C841),
+                    color: _drowsinessStatus.contains('Drowsy') ? Colors.red : const Color(0xFF78C841),
                     width: 3,
                   ),
                 ),
@@ -607,9 +732,7 @@ class _HomePageState extends State<HomePage> {
                       child: ElevatedButton(
                         onPressed: isButtonEnabled ? _toggleMonitoring : null,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _isMonitoring
-                              ? Colors.red.shade400
-                              : const Color(0xFF78C841),
+                          backgroundColor: _isMonitoring ? Colors.red.shade400 : const Color(0xFF78C841),
                           foregroundColor: Colors.white,
                           disabledBackgroundColor: Colors.grey.shade300,
                           disabledForegroundColor: Colors.grey.shade500,
@@ -622,16 +745,12 @@ class _HomePageState extends State<HomePage> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(
-                              _isMonitoring
-                                  ? Icons.stop_circle
-                                  : Icons.play_circle_filled,
+                              _isMonitoring ? Icons.stop_circle : Icons.play_circle_filled,
                               size: 28,
                             ),
                             const SizedBox(width: 12),
                             Text(
-                              _isMonitoring
-                                  ? 'Stop Monitoring'
-                                  : 'Start Monitoring',
+                              _isMonitoring ? 'Stop Monitoring' : 'Start Monitoring',
                               style: const TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -641,14 +760,10 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                     ),
-                    // Show status message if button is disabled
                     if (!isButtonEnabled) ...[
                       const SizedBox(height: 12),
                       Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         decoration: BoxDecoration(
                           color: Colors.orange.shade50,
                           borderRadius: BorderRadius.circular(12),
@@ -683,7 +798,6 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             const SizedBox(height: 24),
-            // Stats Section
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
@@ -738,14 +852,19 @@ class _HomePageState extends State<HomePage> {
         children: [
           Icon(icon, size: 32, color: color),
           const SizedBox(height: 12),
-          Text(value,
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: color,
-              )),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
           const SizedBox(height: 4),
-          Text(title, style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+          Text(
+            title,
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+          ),
         ],
       ),
     );
